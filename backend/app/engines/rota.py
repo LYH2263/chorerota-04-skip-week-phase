@@ -1,14 +1,18 @@
 """Round-robin weekly chore assignments + swap legality."""
 
-def build_week_slots(member_ids: list[int], task_ids: list[int], days: int = 7) -> list[dict]:
-    """Assign each (day, task) to members in round-robin by task then day."""
+def build_week_slots(member_ids: list[int], task_ids: list[int], days: int = 7, phase: int = 0) -> list[dict]:
+    """Assign each (day, task) to members in round-robin by task then day.
+
+    phase 为相位账本（app.engines.phase）给出的起始格偏移，跳过周占掉的格数
+    通过 phase 传入，使后续周承接而不是从头轮转。
+    """
     if not member_ids or not task_ids:
         return []
     slots = []
     idx = 0
     for day in range(days):
         for tid in task_ids:
-            mid = member_ids[idx % len(member_ids)]
+            mid = member_ids[(phase + idx) % len(member_ids)]
             slots.append({"day": day, "task_id": tid, "member_id": mid})
             idx += 1
     return slots

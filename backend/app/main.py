@@ -4,7 +4,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from app import seed
 from app.db import connect
+from app.engines.phase import ledger_phase, would_be_slots
 from app.engines.rota import build_week_slots, swap_legal, apply_swap
+from app.modules.skip_week import IllegalTransition, skip_week, unskip_week
 
 app = FastAPI(title="Chorerota", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -39,7 +41,13 @@ def add_task(body: dict):
 
 @app.get("/api/weeks")
 def list_weeks():
-    c = connect(); rows = [dict(r) for r in c.execute("SELECT * FROM weeks")]; c.close(); return rows
+    c = connect(); rows = [dict(r) for r in c.execute("SELECT * FROM weeks ORDER BY id")]; c.close(); return rows
+
+@app.post("/api/weeks")
+def add_week(body: dict):
+    c = connect()
+    cur = c.execute("INSERT INTO weeks(label,status) VALUES (?,?)", (body.get("label", "新的一周"), "draft"))
+    c.commit(); wid = cur.lastrowid; c.close(); return {"id": wid, "status": "draft"}
 
 @app.get("/api/weeks/{week_id}/board")
 def week_board(week_id: int):
@@ -63,16 +71,52 @@ def generate(week_id: int, body: GenBody = GenBody()):
     c = connect()
     week = c.execute("SELECT * FROM weeks WHERE id=?", (week_id,)).fetchone()
     if not week: c.close(); raise HTTPException(404, "week not found")
+    if week["status"] == "skipped":
+        c.close(); raise HTTPException(400, "week_skipped")  # 跳过周须先取消跳过再生成
     mids = [r["id"] for r in c.execute("SELECT id FROM members WHERE active=1 AND data_quality='clean' ORDER BY id")]
     tids = [r["id"] for r in c.execute("SELECT id FROM tasks WHERE data_quality='clean' AND weight>0 ORDER BY id")]
-    slots = build_week_slots(mids, tids, days=body.days)
+    # 相位账本：已记录相位（含跳过周取消后重新生成）原样起算；未记录则按累加落账。
+    if week["phase_start"] is not None:
+        phase = week["phase_start"]
+    else:
+        rows = c.execute("SELECT id, slot_count FROM weeks ORDER BY id").fetchall()
+        phase = ledger_phase(rows, week_id)
+    slots = build_week_slots(mids, tids, days=body.days, phase=phase)
     c.execute("DELETE FROM assignments WHERE week_id=?", (week_id,))
     for s in slots:
         c.execute("INSERT INTO assignments(week_id,day,task_id,member_id) VALUES (?,?,?,?)",
                   (week_id, s["day"], s["task_id"], s["member_id"]))
-    c.execute("UPDATE weeks SET status='ready' WHERE id=?", (week_id,))
+    c.execute("UPDATE weeks SET status='ready', phase_start=?, slot_count=? WHERE id=?",
+              (phase, len(slots), week_id))
     c.commit(); c.close()
-    return {"count": len(slots), "slots": slots}
+    return {"count": len(slots), "phase_start": phase, "slots": slots}
+
+class SkipBody(BaseModel):
+    days: int = 7
+
+@app.post("/api/weeks/{week_id}/skip")
+def skip(week_id: int, body: SkipBody = SkipBody()):
+    c = connect()
+    try:
+        result = skip_week(c, week_id, days=body.days)  # 带格周：清空格子并作废 pending 对调
+    except KeyError:
+        c.close(); raise HTTPException(404, "week not found")
+    except IllegalTransition as e:
+        c.close(); raise HTTPException(400, str(e))
+    c.commit(); c.close()
+    return result
+
+@app.post("/api/weeks/{week_id}/unskip")
+def unskip(week_id: int):
+    c = connect()
+    try:
+        result = unskip_week(c, week_id)
+    except KeyError:
+        c.close(); raise HTTPException(404, "week not found")
+    except IllegalTransition as e:
+        c.close(); raise HTTPException(400, str(e))
+    c.commit(); c.close()
+    return result
 
 class SwapBody(BaseModel):
     a_day: int; a_task: int; b_day: int; b_task: int; note: str = ""
@@ -80,6 +124,10 @@ class SwapBody(BaseModel):
 @app.post("/api/weeks/{week_id}/swaps")
 def request_swap(week_id: int, body: SwapBody):
     c = connect()
+    week = c.execute("SELECT status FROM weeks WHERE id=?", (week_id,)).fetchone()
+    if not week: c.close(); raise HTTPException(404, "week not found")
+    if week["status"] == "skipped":
+        c.close(); raise HTTPException(400, "week_skipped")  # 跳过周无格子可对调
     assigns = [dict(r) for r in c.execute("SELECT day,task_id,member_id FROM assignments WHERE week_id=?", (week_id,))]
     check = swap_legal(assigns, body.a_day, body.a_task, body.b_day, body.b_task)
     if not check["ok"]:

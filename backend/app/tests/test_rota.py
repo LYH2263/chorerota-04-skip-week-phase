@@ -16,3 +16,11 @@ def test_apply_swap_exchanges():
     slots = build_week_slots([1, 2], [10], days=2)
     out = apply_swap(slots, 0, 10, 1, 10)
     assert out[0]["member_id"] == 2 and out[1]["member_id"] == 1
+
+def test_round_robin_phase_offset():
+    slots = build_week_slots([1, 2, 3], [10], days=2, phase=1)
+    assert [s["member_id"] for s in slots] == [2, 3]
+
+def test_round_robin_phase_wraps():
+    slots = build_week_slots([1, 2, 3], [10], days=4, phase=2)
+    assert [s["member_id"] for s in slots] == [3, 1, 2, 3]
