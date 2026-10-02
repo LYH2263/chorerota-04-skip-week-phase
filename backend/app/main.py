@@ -4,10 +4,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from app import seed
 from app.db import connect
-from app.engines.rota import build_week_slots, swap_legal, apply_swap
+from app.engines.rota import swap_legal, apply_swap
+from app.modules.skip_week import SkipError, mark_skipped, unskip
+from app.modules.week_generate import generate_week
 
 app = FastAPI(title="Chorerota", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+class GenBody(BaseModel):
+    days: int = 7
+
+class SwapBody(BaseModel):
+    a_day: int; a_task: int; b_day: int; b_task: int; note: str = ""
 
 @app.on_event("startup")
 def _startup(): seed.init_db()
@@ -39,7 +47,38 @@ def add_task(body: dict):
 
 @app.get("/api/weeks")
 def list_weeks():
-    c = connect(); rows = [dict(r) for r in c.execute("SELECT * FROM weeks")]; c.close(); return rows
+    c = connect(); rows = [dict(r) for r in c.execute("SELECT * FROM weeks ORDER BY id")]; c.close(); return rows
+
+@app.post("/api/weeks")
+def add_week(body: dict):
+    c = connect()
+    cur = c.execute("INSERT INTO weeks(label,status) VALUES (?,?)",
+                    (body.get("label", "新一周"), "draft"))
+    c.commit(); wid = cur.lastrowid; c.close(); return {"id": wid, "status": "draft"}
+
+@app.post("/api/weeks/{week_id}/skip")
+def skip_week(week_id: int, body: GenBody = GenBody()):
+    c = connect()
+    try:
+        result = mark_skipped(c, week_id, days=body.days)
+    except SkipError as e:
+        c.close()
+        code = 404 if e.reason == "week_not_found" else 400
+        raise HTTPException(code, e.reason)
+    c.close()
+    return result
+
+@app.post("/api/weeks/{week_id}/unskip")
+def cancel_skip(week_id: int):
+    c = connect()
+    try:
+        result = unskip(c, week_id)
+    except SkipError as e:
+        c.close()
+        code = 404 if e.reason == "week_not_found" else 400
+        raise HTTPException(code, e.reason)
+    c.close()
+    return result
 
 @app.get("/api/weeks/{week_id}/board")
 def week_board(week_id: int):
@@ -55,27 +94,17 @@ def week_board(week_id: int):
         a["task_title"] = tasks.get(a["task_id"], "?")
     return {"week": dict(week), "assignments": assigns}
 
-class GenBody(BaseModel):
-    days: int = 7
-
 @app.post("/api/weeks/{week_id}/generate")
 def generate(week_id: int, body: GenBody = GenBody()):
     c = connect()
-    week = c.execute("SELECT * FROM weeks WHERE id=?", (week_id,)).fetchone()
-    if not week: c.close(); raise HTTPException(404, "week not found")
-    mids = [r["id"] for r in c.execute("SELECT id FROM members WHERE active=1 AND data_quality='clean' ORDER BY id")]
-    tids = [r["id"] for r in c.execute("SELECT id FROM tasks WHERE data_quality='clean' AND weight>0 ORDER BY id")]
-    slots = build_week_slots(mids, tids, days=body.days)
-    c.execute("DELETE FROM assignments WHERE week_id=?", (week_id,))
-    for s in slots:
-        c.execute("INSERT INTO assignments(week_id,day,task_id,member_id) VALUES (?,?,?,?)",
-                  (week_id, s["day"], s["task_id"], s["member_id"]))
-    c.execute("UPDATE weeks SET status='ready' WHERE id=?", (week_id,))
-    c.commit(); c.close()
-    return {"count": len(slots), "slots": slots}
-
-class SwapBody(BaseModel):
-    a_day: int; a_task: int; b_day: int; b_task: int; note: str = ""
+    try:
+        result = generate_week(c, week_id, days=body.days)
+    except SkipError as e:
+        c.close()
+        code = 404 if e.reason == "week_not_found" else 400
+        raise HTTPException(code, e.reason)
+    c.close()
+    return result
 
 @app.post("/api/weeks/{week_id}/swaps")
 def request_swap(week_id: int, body: SwapBody):

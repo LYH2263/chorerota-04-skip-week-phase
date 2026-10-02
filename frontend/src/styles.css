@@ -49,3 +49,12 @@ input, select, textarea {
 .list { padding: 0; margin: 0; }
 .muted { color: var(--muted); font-size: 13px; }
 .err { color: #b33a2c; }
+.week-list { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0 4px; }
+.week-pick { padding: 6px 10px; font-size: 13px; border-radius: 999px; background: #fff; }
+.week-pick.active { border-color: var(--coral); color: var(--coral); font-weight: 600; }
+.week-head { margin-top: 12px; }
+.week-head h2 { margin: 0; font-size: 18px; display: flex; align-items: center; gap: 8px; }
+.week-card.skipped { background: repeating-linear-gradient(45deg, #f4faf1, #f4faf1 8px, #eef3ea 8px, #eef3ea 16px); opacity: .85; }
+.skip-cell { margin: 0; font-style: italic; }
+.skip-note { background: #ffe3de; color: #b33a2c; border-radius: 10px; padding: 8px 12px; font-size: 13px; }
+button:disabled { opacity: .45; cursor: not-allowed; }

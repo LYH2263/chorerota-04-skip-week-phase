@@ -1,17 +1,28 @@
 """Round-robin weekly chore assignments + swap legality."""
 
-def build_week_slots(member_ids: list[int], task_ids: list[int], days: int = 7) -> list[dict]:
-    """Assign each (day, task) to members in round-robin by task then day."""
+def build_week_slots(member_ids: list[int], task_ids: list[int], days: int = 7,
+                     offset: int = 0) -> list[dict]:
+    """Assign each (day, task) to members in round-robin by task then day.
+
+    ``offset`` is the number of grid cells already consumed by earlier weeks
+    (including skipped weeks); a skipped week therefore still advances the
+    round-robin phase without producing assignments.
+    """
     if not member_ids or not task_ids:
         return []
     slots = []
-    idx = 0
+    idx = offset
     for day in range(days):
         for tid in task_ids:
             mid = member_ids[idx % len(member_ids)]
             slots.append({"day": day, "task_id": tid, "member_id": mid})
             idx += 1
     return slots
+
+
+def grid_size(task_ids: list[int], days: int = 7) -> int:
+    """Number of round-robin cells a week consumes (skipped or not)."""
+    return days * len(task_ids)
 
 
 def swap_legal(slots: list[dict], a_day: int, a_task: int, b_day: int, b_task: int) -> dict:
